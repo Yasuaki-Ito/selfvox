@@ -27,6 +27,7 @@ from models import (
     SupportedDevices,
 )
 from tts_engine import TTSEngine
+from version import VERSION
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,7 +38,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="SelfVox",
     description="Voice Clone TTS Server - VOICEVOX互換API",
-    version="1.0.0",
+    version=VERSION,
 )
 
 app.add_middleware(
@@ -214,7 +215,7 @@ async def speakers(core_version: str | None = Query(None)):
                     )
                     for s in profile.styles
                 ],
-                version="0.0.1",
+                version=VERSION,
                 supported_features=SpeakerSupportedFeatures(),
             )
         )
@@ -243,7 +244,7 @@ async def is_initialized_speaker(
 @app.get("/version")
 async def version():
     """エンジンバージョン"""
-    return "0.1.0"
+    return VERSION
 
 
 @app.get("/supported_devices")
@@ -559,7 +560,7 @@ async def web_ui(request: Request):
     </select>
 
     <div style="margin-top: 16px;">
-      <button type="submit" class="btn-primary">Save Voice</button>
+      <button type="submit" id="saveBtn" class="btn-primary">Save Voice</button>
     </div>
   </form>
   <div id="status" class="status"></div>
@@ -621,12 +622,38 @@ audioInput.addEventListener('change', () => {{
 document.getElementById('voiceForm').addEventListener('submit', async (e) => {{
   e.preventDefault();
   const st = document.getElementById('status');
-  const fd = new FormData();
-  fd.append('name', document.getElementById('name').value);
-  fd.append('ref_text', document.getElementById('refText').value);
-  fd.append('language', document.getElementById('lang').value);
+  const btn = document.getElementById('saveBtn');
+  const nameVal = document.getElementById('name').value.trim();
+  const refTextVal = document.getElementById('refText').value.trim();
   const file = audioInput.files[0];
-  if (file) fd.append('audio', file);
+
+  // バリデーション
+  if (!nameVal) {{
+    st.className = 'status err';
+    st.textContent = 'Voice Name を入力してください';
+    return;
+  }}
+  if (!file) {{
+    st.className = 'status err';
+    st.textContent = 'Reference Audio を選択してください';
+    return;
+  }}
+  if (!refTextVal) {{
+    st.className = 'status err';
+    st.textContent = 'Reference Text を入力してください';
+    return;
+  }}
+
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+  st.className = 'status';
+  st.style.display = 'none';
+
+  const fd = new FormData();
+  fd.append('name', nameVal);
+  fd.append('ref_text', refTextVal);
+  fd.append('language', document.getElementById('lang').value);
+  fd.append('audio', file);
 
   try {{
     const res = await fetch('/manage/voice', {{ method: 'POST', body: fd }});
@@ -639,11 +666,15 @@ document.getElementById('voiceForm').addEventListener('submit', async (e) => {{
       loadVoices();
     }} else {{
       st.className = 'status err';
-      st.textContent = data.detail || 'Error';
+      const detail = data.detail;
+      st.textContent = typeof detail === 'string' ? detail : JSON.stringify(detail) || 'Error';
     }}
   }} catch (err) {{
     st.className = 'status err';
     st.textContent = err.message;
+  }} finally {{
+    btn.disabled = false;
+    btn.textContent = 'Save Voice';
   }}
 }});
 
@@ -834,6 +865,7 @@ async def manage_delete_voice(dir_name: str):
     if voice_dir.exists():
         shutil.rmtree(voice_dir)
         engine.voices.clear()
+        engine._voice_prompts.clear()
         engine._load_voices()
     return {"message": "Deleted"}
 

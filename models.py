@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from version import VERSION
+
 from pydantic import BaseModel, Field
 
 
@@ -74,7 +76,7 @@ class Speaker(BaseModel):
     name: str
     speaker_uuid: str
     styles: list[SpeakerStyle]
-    version: str = "0.0.1"
+    version: str = VERSION
     supported_features: SpeakerSupportedFeatures = Field(
         default_factory=SpeakerSupportedFeatures
     )
