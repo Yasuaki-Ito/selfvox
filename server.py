@@ -56,8 +56,6 @@ engine = TTSEngine()
 async def startup():
     engine.load()
     logger.info("Server ready: http://localhost:50021")
-    import webbrowser
-    webbrowser.open("http://localhost:50021")
 
 
 # --- VOICEVOX互換エンドポイント ---
@@ -814,10 +812,24 @@ async def manage_save_voice(
         with open(meta_path, encoding="utf-8") as f:
             meta = json.load(f)
     else:
+        used_ids = set()
+        for d in VOICES_DIR.iterdir():
+            if not d.is_dir():
+                continue
+            mp = d / "meta.json"
+            if mp.exists():
+                try:
+                    with open(mp, encoding="utf-8") as mf:
+                        used_ids.add(json.load(mf).get("speaker_id", 0))
+                except Exception:
+                    pass
+        new_id = 0
+        while new_id in used_ids:
+            new_id += 1
         meta = {
-            "speaker_id": len(list(VOICES_DIR.iterdir())),
-            "speaker_uuid": f"00000000-0000-0000-0000-{len(list(VOICES_DIR.iterdir())):012d}",
-            "styles": [{"name": "\u30ce\u30fc\u30de\u30eb", "id": 0, "type": "talk"}],
+            "speaker_id": new_id,
+            "speaker_uuid": f"00000000-0000-0000-0000-{new_id:012d}",
+            "styles": [{"name": "\u30ce\u30fc\u30de\u30eb", "id": new_id, "type": "talk"}],
             "ref_audio": "reference.wav",
         }
 
@@ -868,6 +880,15 @@ async def manage_delete_voice(dir_name: str):
         engine._voice_prompts.clear()
         engine._load_voices()
     return {"message": "Deleted"}
+
+
+@app.post("/manage/reload")
+async def manage_reload_voices():
+    """Reload voice profiles from disk"""
+    engine.voices.clear()
+    engine._voice_prompts.clear()
+    engine._load_voices()
+    return {"message": f"Reloaded {len(engine.voices)} voices"}
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,6 +51,7 @@ class TTSEngine:
         self.voices: dict[int, VoiceProfile] = {}  # speaker_id -> VoiceProfile
         self._voice_prompts: dict[int, dict] = {}  # speaker_id -> cached prompt
         self._loaded = False
+        self._synth_lock = threading.Lock()
 
     def load(self) -> None:
         """モデルとボイスプロファイルをロード"""
@@ -156,11 +158,23 @@ class TTSEngine:
         volume: float = 1.0,
         output_sr: int = 24000,
     ) -> tuple[np.ndarray, int]:
-        """テキストから音声を合成
+        """テキストから音声を合成（排他ロック付き）
 
         Returns:
             (wav_data, sample_rate) のタプル
         """
+        with self._synth_lock:
+            return self._synthesize_inner(
+                text, speaker_id, speed, volume, output_sr)
+
+    def _synthesize_inner(
+        self,
+        text: str,
+        speaker_id: int,
+        speed: float,
+        volume: float,
+        output_sr: int,
+    ) -> tuple[np.ndarray, int]:
         if self.model is None:
             raise RuntimeError("モデルが未ロードです。load() を呼んでください。")
 

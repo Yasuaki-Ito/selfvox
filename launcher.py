@@ -1,17 +1,16 @@
 """SelfVox ランチャー
-初回起動時にuv + Python環境を自動構築し、サーバーを起動する。
+初回起動時にuv + Python環境を自動構築し、GUIからサーバーを起動する。
 PyInstallerでexe化して配布する。
 """
 
 import os
-import signal
 import subprocess
 import sys
 import urllib.request
 import zipfile
 from pathlib import Path
 
-# アプリのベースディレクトリ（exe化時は exe の場所、開発時はスクリプトの場所）
+# アプリのベースディレクトリ（exe化時は exe の場所）
 if getattr(sys, "frozen", False):
     APP_DIR = Path(sys.executable).parent
 else:
@@ -30,7 +29,7 @@ UV_DOWNLOAD_URL = (
     "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip"
 )
 
-TORCH_INDEX = "https://download.pytorch.org/whl/cu124"
+TORCH_INDEX = "https://download.pytorch.org/whl/cu128"
 PACKAGES_TORCH = ["torch", "torchaudio"]
 PACKAGES_OTHER = [
     "qwen-tts",
@@ -42,16 +41,22 @@ PACKAGES_OTHER = [
 ]
 
 
-def print_step(msg: str) -> None:
-    print(f"\n>>> {msg}")
+def _log(callback, msg: str) -> None:
+    if callback:
+        callback(msg)
+    else:
+        print(f">>> {msg}")
 
 
-def download_uv() -> None:
-    """uv.exe をダウンロードして _tools/ に配置"""
+def is_setup_needed() -> bool:
+    return not PYTHON_EXE.exists()
+
+
+def download_uv(log_callback=None) -> None:
     if UV_EXE.exists():
         return
 
-    print_step("uv をダウンロード中...")
+    _log(log_callback, "uv をダウンロード中...")
     TOOLS_DIR.mkdir(parents=True, exist_ok=True)
 
     zip_path = TOOLS_DIR / "uv.zip"
@@ -60,91 +65,100 @@ def download_uv() -> None:
     with zipfile.ZipFile(zip_path, "r") as zf:
         for member in zf.namelist():
             if member.endswith("uv.exe"):
-                # フラットに _tools/uv.exe として展開
                 with zf.open(member) as src, open(UV_EXE, "wb") as dst:
                     dst.write(src.read())
                 break
 
     zip_path.unlink(missing_ok=True)
-    print(f"    uv.exe を {UV_EXE} に配置しました")
+    _log(log_callback, f"uv.exe を {UV_EXE} に配置しました")
 
 
-def run_cmd(args: list[str], desc: str) -> None:
-    """コマンドを実行して結果を表示"""
-    print_step(desc)
-    print(f"    実行: {' '.join(args)}")
-    result = subprocess.run(args, cwd=str(APP_DIR))
-    if result.returncode != 0:
-        print(f"    エラー: コマンドが失敗しました (code={result.returncode})")
-        sys.exit(1)
+def run_cmd_with_output(args: list[str], desc: str, log_callback=None) -> None:
+    _log(log_callback, desc)
+
+    creation_flags = 0
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        creation_flags = subprocess.CREATE_NO_WINDOW
+
+    proc = subprocess.Popen(
+        args,
+        cwd=str(APP_DIR),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        creationflags=creation_flags,
+    )
+    for line in proc.stdout:
+        line = line.rstrip()
+        if "\r" in line:
+            line = line.rsplit("\r", 1)[-1]
+        if line:
+            _log(log_callback, line)
+    proc.wait()
+    if proc.returncode != 0:
+        raise RuntimeError(f"コマンドが失敗しました (code={proc.returncode})")
 
 
-def setup_environment() -> None:
-    """venv が無ければ環境を構築"""
-    if PYTHON_EXE.exists():
+def setup_environment(log_callback=None) -> None:
+    if not is_setup_needed():
         return
 
-    print_step("=== 初回セットアップ開始 ===")
+    _log(log_callback, "=== 初回セットアップ開始 ===")
 
-    download_uv()
+    download_uv(log_callback)
 
-    # venv 作成
-    run_cmd(
+    run_cmd_with_output(
         [str(UV_EXE), "venv", "-p", "3.12", str(VENV_DIR)],
         "Python 3.12 仮想環境を作成中...",
+        log_callback,
     )
 
-    # PyTorch + CUDA インストール
-    run_cmd(
+    run_cmd_with_output(
         [str(UV_EXE), "pip", "install", "--python", str(PYTHON_EXE)]
         + PACKAGES_TORCH
         + ["--index-url", TORCH_INDEX],
         "PyTorch + CUDA をインストール中（数分かかります）...",
+        log_callback,
     )
 
-    # その他パッケージ
-    run_cmd(
+    run_cmd_with_output(
         [str(UV_EXE), "pip", "install", "--python", str(PYTHON_EXE)]
         + PACKAGES_OTHER,
         "依存パッケージをインストール中...",
+        log_callback,
     )
 
-    print_step("=== セットアップ完了 ===")
+    _log(log_callback, "=== セットアップ完了 ===")
 
 
-def start_server() -> None:
-    """サーバーをサブプロセスで起動"""
-    print_step("SelfVox サーバーを起動中...")
-    print(f"    http://localhost:50021 でアクセスできます")
-    print(f"    停止するには Ctrl+C を押してください\n")
-
+def start_server_process(port: int = 50021) -> subprocess.Popen:
     run_py = APP_DIR / "run.py"
+
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+
+    creation_flags = 0
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        creation_flags = subprocess.CREATE_NO_WINDOW
+
     proc = subprocess.Popen(
-        [str(PYTHON_EXE), str(run_py)],
+        [str(PYTHON_EXE), str(run_py), "--port", str(port)],
         cwd=str(APP_DIR),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        env=env,
+        creationflags=creation_flags,
     )
-
-    def handle_sigint(sig, frame):
-        proc.terminate()
-        proc.wait()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, handle_sigint)
-
-    try:
-        proc.wait()
-    except KeyboardInterrupt:
-        proc.terminate()
-        proc.wait()
+    return proc
 
 
 def main() -> None:
-    print("=" * 50)
-    print("  SelfVox - Voice Clone TTS Server")
-    print("=" * 50)
-
-    setup_environment()
-    start_server()
+    from gui import SelfVoxGUI
+    app = SelfVoxGUI()
+    app.run()
 
 
 if __name__ == "__main__":
