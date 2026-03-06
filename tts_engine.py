@@ -192,24 +192,26 @@ class TTSEngine:
         if text and not text.rstrip().endswith(end_puncts):
             text = text.rstrip() + "。"
 
-        # キャッシュ済みプロンプトを取得（なければリアルタイム計算）
+        # キャッシュ済みプロンプトを取得
         prompt = self._voice_prompts.get(profile.speaker_id)
 
-        if prompt is not None:
-            wavs, sr = self.model.generate_voice_clone(
-                text=text,
-                language=profile.language,
-                voice_clone_prompt=prompt,
-                max_new_tokens=4096,
-            )
-        else:
-            wavs, sr = self.model.generate_voice_clone(
-                text=text,
-                language=profile.language,
+        if prompt is None:
+            # プロンプトが未計算 → その場で計算してキャッシュ
+            logger.warning(
+                "ボイスプロンプト未キャッシュ: %s (ID=%d) — 再計算します",
+                profile.name, profile.speaker_id)
+            prompt = self.model.create_voice_clone_prompt(
                 ref_audio=str(profile.ref_audio_path),
                 ref_text=profile.ref_text,
-                max_new_tokens=4096,
             )
+            self._voice_prompts[profile.speaker_id] = prompt
+
+        wavs, sr = self.model.generate_voice_clone(
+            text=text,
+            language=profile.language,
+            voice_clone_prompt=prompt,
+            max_new_tokens=4096,
+        )
 
         wav = wavs[0]
 
@@ -241,3 +243,101 @@ class TTSEngine:
         wav = np.clip(wav, -1.0, 1.0)
 
         return wav, sr
+
+    def synthesize_batch(
+        self,
+        texts: list[str],
+        speaker_id: int,
+        speed: float = 1.0,
+        volume: float = 1.0,
+        output_sr: int = 24000,
+    ) -> list[tuple[np.ndarray, int]]:
+        """複数テキストをバッチで一括合成（排他ロック付き）
+
+        モデルに複数テキストをまとめて渡し、1回のgenerate呼び出しで
+        全て合成する。個別に synthesize() を呼ぶより効率的。
+
+        Returns:
+            [(wav_data, sample_rate), ...] のリスト
+        """
+        with self._synth_lock:
+            return self._synthesize_batch_inner(
+                texts, speaker_id, speed, volume, output_sr)
+
+    def _synthesize_batch_inner(
+        self,
+        texts: list[str],
+        speaker_id: int,
+        speed: float,
+        volume: float,
+        output_sr: int,
+    ) -> list[tuple[np.ndarray, int]]:
+        if self.model is None:
+            raise RuntimeError("モデルが未ロードです。load() を呼んでください。")
+        if not texts:
+            return []
+
+        profile = self.voices.get(speaker_id)
+        if profile is None:
+            real_sid = self.get_speaker_id_from_style(speaker_id)
+            if real_sid is not None:
+                profile = self.voices[real_sid]
+            else:
+                raise ValueError(f"スピーカーID {speaker_id} が見つかりません")
+
+        # テキスト末尾に句読点追加
+        end_puncts = ("。", "！", "？", ".", "!", "?", "…", "」", "』", "）", ")")
+        processed = []
+        for t in texts:
+            t = t.strip()
+            if t and not t.rstrip().endswith(end_puncts):
+                t = t.rstrip() + "。"
+            processed.append(t)
+
+        prompt = self._voice_prompts.get(profile.speaker_id)
+
+        if prompt is None:
+            logger.warning(
+                "ボイスプロンプト未キャッシュ(batch): %s (ID=%d) — 再計算します",
+                profile.name, profile.speaker_id)
+            prompt = self.model.create_voice_clone_prompt(
+                ref_audio=str(profile.ref_audio_path),
+                ref_text=profile.ref_text,
+            )
+            self._voice_prompts[profile.speaker_id] = prompt
+
+        wavs, sr = self.model.generate_voice_clone(
+            text=processed,
+            language=profile.language,
+            voice_clone_prompt=prompt,
+            max_new_tokens=4096,
+        )
+
+        results = []
+        for wav in wavs:
+            if isinstance(wav, torch.Tensor):
+                wav = wav.cpu().numpy()
+
+            if abs(speed - 1.0) > 0.01:
+                wav_tensor = torch.from_numpy(wav).unsqueeze(0).float()
+                wav_tensor = torchaudio.functional.resample(
+                    wav_tensor, orig_freq=sr, new_freq=int(sr * speed)
+                )
+                wav = wav_tensor.squeeze(0).numpy()
+
+            if abs(volume - 1.0) > 0.01:
+                wav = wav * volume
+
+            out_sr = sr
+            if sr != output_sr:
+                wav_tensor = torch.from_numpy(wav).unsqueeze(0).float()
+                wav_tensor = torchaudio.functional.resample(
+                    wav_tensor, orig_freq=sr, new_freq=output_sr
+                )
+                wav = wav_tensor.squeeze(0).numpy()
+                out_sr = output_sr
+
+            wav = np.clip(wav, -1.0, 1.0)
+            results.append((wav, out_sr))
+
+        return results

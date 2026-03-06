@@ -299,7 +299,7 @@ async def speaker_info(
                     for s in profile.styles
                 ],
             }
-    raise HTTPException(status_code=404, detail="Speaker not found")
+    raise HTTPException(status_code=404, detail="スピーカーが見つかりません")
 
 
 @app.get("/user_dict")
@@ -486,6 +486,39 @@ async def web_ui(request: Request):
   input[type=range] {{ width: 100%; accent-color: #ff9800; }}
   .slider-label {{ font-size: 13px; color: #555; }}
 
+  /* Drop zone */
+  .drop-zone {{ border: 2px dashed #bbb; border-radius: 8px; padding: 20px; text-align: center;
+                color: #888; cursor: pointer; transition: border-color .2s, background .2s; }}
+  .drop-zone.dragover {{ border-color: #5c6bc0; background: #e8eaf6; color: #333; }}
+  .drop-zone input[type=file] {{ display: none; }}
+  .drop-zone .drop-text {{ font-size: 14px; }}
+
+  /* Spinner */
+  .synth-progress {{ display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 13px; color: #666; }}
+  .spinner {{ width: 18px; height: 18px; border: 2.5px solid #ddd; border-top-color: #ff9800;
+              border-radius: 50%; animation: spin .7s linear infinite; }}
+  @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+
+  /* History */
+  .history-list {{ display: grid; gap: 8px; margin-top: 10px; }}
+  .history-item {{ display: flex; align-items: center; gap: 10px; background: #fafafa;
+                   border-radius: 8px; padding: 10px 14px; font-size: 13px; }}
+  .history-item .hist-text {{ flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+  .history-item .hist-time {{ color: #999; font-size: 11px; white-space: nowrap; }}
+  .history-item audio {{ height: 30px; }}
+  .history-item a {{ text-decoration: none; }}
+  .history-empty {{ color: #999; font-size: 13px; font-style: italic; }}
+
+  /* Batch */
+  .batch-progress {{ margin-top: 10px; }}
+  .batch-bar {{ width: 100%; height: 6px; background: #eee; border-radius: 3px; overflow: hidden; }}
+  .batch-bar-fill {{ height: 100%; background: #ff9800; transition: width .3s; }}
+  .batch-results {{ display: grid; gap: 6px; margin-top: 10px; }}
+  .batch-item {{ display: flex; align-items: center; gap: 8px; background: #fafafa;
+                 border-radius: 6px; padding: 8px 12px; font-size: 13px; }}
+  .batch-item .batch-text {{ flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+  .batch-item audio {{ height: 28px; }}
+
   /* Footer */
   .footer {{ text-align: center; font-size: 12px; color: #aaa; margin-top: 24px; padding: 12px; }}
 </style>
@@ -523,27 +556,30 @@ async def web_ui(request: Request):
 
 <!-- Registered Voices -->
 <div class="card">
-  <h2>Registered Voices</h2>
+  <h2>登録済みボイス</h2>
   <p class="desc">登録済みのボイスプロファイル一覧です。VOICEVOX対応アプリからスピーカーとして選択できます。</p>
-  <div id="voiceList" class="voice-list"><em>Loading...</em></div>
+  <div id="voiceList" class="voice-list"><em>読み込み中...</em></div>
 </div>
 
 <!-- Voice Registration -->
 <div class="card">
-  <h2>Voice Registration</h2>
+  <h2>ボイス登録</h2>
   <p class="desc">クローンしたい声の短いサンプル音声（5〜15秒程度のWAV）と、その音声の書き起こしテキストを登録します。</p>
   <form id="voiceForm">
-    <label>Voice Name</label>
+    <label>ボイス名</label>
     <input type="text" id="name" value="" placeholder="(例) ナレーター1号">
 
-    <label>Reference Audio</label>
-    <input type="file" id="audio" accept=".wav,.mp3,.ogg,.flac">
+    <label>リファレンス音声</label>
+    <div id="dropZone" class="drop-zone">
+      <input type="file" id="audio" accept=".wav,.mp3,.ogg,.flac">
+      <div class="drop-text" id="dropText">ここにファイルをドラッグ&ドロップ<br>またはクリックして選択</div>
+    </div>
     <audio id="preview" controls style="display:none; margin-top:6px; width:100%"></audio>
 
-    <label>Reference Text</label>
+    <label>リファレンステキスト</label>
     <textarea id="refText" placeholder="リファレンス音声の書き起こしテキストを正確に入力してください"></textarea>
 
-    <label>Language</label>
+    <label>言語</label>
     <select id="lang">
       <option value="Japanese" selected>Japanese</option>
       <option value="Chinese">Chinese</option>
@@ -558,7 +594,7 @@ async def web_ui(request: Request):
     </select>
 
     <div style="margin-top: 16px;">
-      <button type="submit" id="saveBtn" class="btn-primary">Save Voice</button>
+      <button type="submit" id="saveBtn" class="btn-primary">ボイスを登録</button>
     </div>
   </form>
   <div id="status" class="status"></div>
@@ -566,36 +602,88 @@ async def web_ui(request: Request):
 
 <!-- Speech Synthesis -->
 <div class="card">
-  <h2>Speech Synthesis</h2>
+  <h2>音声合成</h2>
   <p class="desc">登録済みボイスでテキスト音声合成をテストできます。</p>
 
-  <label>Speaker</label>
-  <select id="synthSpeaker"><option value="">-- Loading --</option></select>
+  <label>スピーカー</label>
+  <select id="synthSpeaker"><option value="">-- 読み込み中 --</option></select>
 
-  <label>Text</label>
+  <label>テキスト</label>
   <textarea id="synthText">こんにちは。音声合成のテストです。</textarea>
 
   <div class="slider-row">
     <div>
-      <label class="slider-label">Speed: <span id="speedVal">1.0</span>x</label>
+      <label class="slider-label">速度: <span id="speedVal">1.0</span>x</label>
       <input type="range" id="synthSpeed" min="0.5" max="2.0" step="0.1" value="1.0"
         oninput="document.getElementById('speedVal').textContent=this.value">
     </div>
     <div>
-      <label class="slider-label">Volume: <span id="volVal">1.0</span>x</label>
+      <label class="slider-label">音量: <span id="volVal">1.0</span>x</label>
       <input type="range" id="synthVolume" min="0.1" max="2.0" step="0.1" value="1.0"
         oninput="document.getElementById('volVal').textContent=this.value">
     </div>
   </div>
 
   <div style="margin-top: 16px; display:flex; gap:8px; align-items:center;">
-    <button id="synthBtn" class="btn-synth" onclick="synthesize()">Synthesize</button>
+    <button id="synthBtn" class="btn-synth" onclick="synthesize()">合成</button>
     <a id="synthDownload" download="synthesis.wav" style="display:none;">
-      <button type="button" class="btn-dl">Download WAV</button>
+      <button type="button" class="btn-dl">WAVダウンロード</button>
     </a>
   </div>
-  <div id="synthStatus" class="synth-status"></div>
+  <div id="synthStatus" class="synth-progress" style="display:none;">
+    <div class="spinner"></div>
+    <span id="synthStatusText">生成中...</span>
+    <span id="synthElapsed">0.0秒</span>
+  </div>
+  <div id="synthError" style="margin-top:8px; font-size:13px; color:#c62828;"></div>
   <audio id="synthAudio" controls style="display:none; margin-top:10px; width:100%"></audio>
+</div>
+
+<!-- Batch Synthesis -->
+<div class="card">
+  <h2>一括合成</h2>
+  <p class="desc">複数行のテキストを1行ずつ順番に合成します。</p>
+
+  <label>スピーカー</label>
+  <select id="batchSpeaker"><option value="">-- 読み込み中 --</option></select>
+
+  <label>テキスト（1行 = 1音声）</label>
+  <textarea id="batchText" rows="6" placeholder="こんにちは。&#10;今日はいい天気ですね。&#10;よろしくお願いします。"></textarea>
+
+  <div class="slider-row">
+    <div>
+      <label class="slider-label">速度: <span id="batchSpeedVal">1.0</span>x</label>
+      <input type="range" id="batchSpeed" min="0.5" max="2.0" step="0.1" value="1.0"
+        oninput="document.getElementById('batchSpeedVal').textContent=this.value">
+    </div>
+    <div>
+      <label class="slider-label">音量: <span id="batchVolVal">1.0</span>x</label>
+      <input type="range" id="batchVolume" min="0.1" max="2.0" step="0.1" value="1.0"
+        oninput="document.getElementById('batchVolVal').textContent=this.value">
+    </div>
+  </div>
+
+  <div style="margin-top: 16px;">
+    <button id="batchBtn" class="btn-synth" onclick="batchSynthesize()">一括合成</button>
+  </div>
+  <div class="batch-progress" id="batchProgress" style="display:none;">
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+      <div class="spinner"></div>
+      <span id="batchStatusText">合成中... 0/0</span>
+    </div>
+    <div class="batch-bar"><div class="batch-bar-fill" id="batchBarFill" style="width:0%"></div></div>
+  </div>
+  <div class="batch-results" id="batchResults"></div>
+</div>
+
+<!-- Synthesis History -->
+<div class="card">
+  <h2>合成履歴</h2>
+  <p class="desc">最近の合成結果を再生・ダウンロードできます（最大20件、ページを閉じるとクリアされます）。</p>
+  <div id="historyList"><em class="history-empty">まだ合成履歴がありません</em></div>
+  <div style="margin-top:10px;">
+    <button class="btn-delete" id="clearHistoryBtn" onclick="clearHistory()" style="display:none;">履歴をクリア</button>
+  </div>
 </div>
 
 <div class="footer">
@@ -608,15 +696,34 @@ async def web_ui(request: Request):
 <script>
 const audioInput = document.getElementById('audio');
 const preview = document.getElementById('preview');
+const dropZone = document.getElementById('dropZone');
+const dropText = document.getElementById('dropText');
 
+// --- Drag & Drop ---
+function setFile(file) {{
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  audioInput.files = dt.files;
+  preview.src = URL.createObjectURL(file);
+  preview.style.display = 'block';
+  dropText.textContent = file.name;
+}}
+
+dropZone.addEventListener('click', () => audioInput.click());
+dropZone.addEventListener('dragover', (e) => {{ e.preventDefault(); dropZone.classList.add('dragover'); }});
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', (e) => {{
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  const f = e.dataTransfer.files[0];
+  if (f && /\.(wav|mp3|ogg|flac)$/i.test(f.name)) setFile(f);
+}});
 audioInput.addEventListener('change', () => {{
   const f = audioInput.files[0];
-  if (f) {{
-    preview.src = URL.createObjectURL(f);
-    preview.style.display = 'block';
-  }}
+  if (f) setFile(f);
 }});
 
+// --- Voice Registration ---
 document.getElementById('voiceForm').addEventListener('submit', async (e) => {{
   e.preventDefault();
   const st = document.getElementById('status');
@@ -625,25 +732,12 @@ document.getElementById('voiceForm').addEventListener('submit', async (e) => {{
   const refTextVal = document.getElementById('refText').value.trim();
   const file = audioInput.files[0];
 
-  // バリデーション
-  if (!nameVal) {{
-    st.className = 'status err';
-    st.textContent = 'Voice Name を入力してください';
-    return;
-  }}
-  if (!file) {{
-    st.className = 'status err';
-    st.textContent = 'Reference Audio を選択してください';
-    return;
-  }}
-  if (!refTextVal) {{
-    st.className = 'status err';
-    st.textContent = 'Reference Text を入力してください';
-    return;
-  }}
+  if (!nameVal) {{ st.className = 'status err'; st.textContent = 'ボイス名を入力してください'; return; }}
+  if (!file) {{ st.className = 'status err'; st.textContent = 'リファレンス音声を選択してください'; return; }}
+  if (!refTextVal) {{ st.className = 'status err'; st.textContent = 'リファレンステキストを入力してください'; return; }}
 
   btn.disabled = true;
-  btn.textContent = 'Saving...';
+  btn.textContent = '保存中...';
   st.className = 'status';
   st.style.display = 'none';
 
@@ -661,21 +755,22 @@ document.getElementById('voiceForm').addEventListener('submit', async (e) => {{
       st.textContent = data.message;
       document.getElementById('voiceForm').reset();
       preview.style.display = 'none';
+      dropText.innerHTML = 'ここにファイルをドラッグ&ドロップ<br>またはクリックして選択';
       loadVoices();
     }} else {{
       st.className = 'status err';
-      const detail = data.detail;
-      st.textContent = typeof detail === 'string' ? detail : JSON.stringify(detail) || 'Error';
+      st.textContent = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail) || 'エラーが発生しました';
     }}
   }} catch (err) {{
     st.className = 'status err';
-    st.textContent = err.message;
+    st.textContent = 'エラー: ' + err.message;
   }} finally {{
     btn.disabled = false;
-    btn.textContent = 'Save Voice';
+    btn.textContent = 'ボイスを登録';
   }}
 }});
 
+// --- Voice List ---
 async function loadVoices() {{
   const el = document.getElementById('voiceList');
   try {{
@@ -683,47 +778,105 @@ async function loadVoices() {{
     const voices = await res.json();
     updateSpeakerSelect(voices);
     if (voices.length === 0) {{
-      el.innerHTML = '<em style="color:#999">ボイスが未登録です。下の Voice Registration から登録してください。</em>';
+      el.innerHTML = '<em style="color:#999">ボイスが未登録です。下の「ボイス登録」から登録してください。</em>';
       return;
     }}
     el.innerHTML = voices.map(v => `
       <div class="voice-item">
         <div class="voice-info">
           <strong>${{v.name}}</strong>
-          <div class="meta">Speaker ID: ${{v.speaker_id}} / ${{v.ref_text || '(no text)'}}</div>
+          <div class="meta">Speaker ID: ${{v.speaker_id}} / ${{v.ref_text || '(テキストなし)'}}</div>
           ${{v.has_audio ? '<audio controls src="/manage/voice/' + v.dir_name + '/audio"></audio>' : ''}}
         </div>
-        <button class="btn-delete" onclick="deleteVoice('${{v.dir_name}}')">Delete</button>
+        <button class="btn-delete" onclick="deleteVoice('${{v.dir_name}}')">削除</button>
       </div>
     `).join('');
   }} catch (err) {{
-    el.innerHTML = '<em>Failed to load</em>';
+    el.innerHTML = '<em>読み込みに失敗しました</em>';
   }}
 }}
 
 async function deleteVoice(dirName) {{
-  if (!confirm('Delete this voice?')) return;
+  if (!confirm('このボイスを削除しますか？')) return;
   await fetch('/manage/voice/' + dirName, {{ method: 'DELETE' }});
   loadVoices();
 }}
+
+// --- Synthesis History ---
+const history = [];
+const MAX_HISTORY = 20;
+
+function addHistory(text, speakerName, blobUrl) {{
+  const now = new Date();
+  const time = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
+  history.unshift({{ text, speakerName, blobUrl, time }});
+  if (history.length > MAX_HISTORY) {{
+    const old = history.pop();
+    URL.revokeObjectURL(old.blobUrl);
+  }}
+  renderHistory();
+}}
+
+function renderHistory() {{
+  const el = document.getElementById('historyList');
+  const clearBtn = document.getElementById('clearHistoryBtn');
+  if (history.length === 0) {{
+    el.innerHTML = '<em class="history-empty">まだ合成履歴がありません</em>';
+    clearBtn.style.display = 'none';
+    return;
+  }}
+  clearBtn.style.display = 'inline-block';
+  el.innerHTML = '<div class="history-list">' + history.map((h, i) => `
+    <div class="history-item">
+      <span class="hist-time">${{h.time}}</span>
+      <span class="hist-text" title="${{h.text}}">${{h.speakerName}}: ${{h.text}}</span>
+      <audio controls src="${{h.blobUrl}}"></audio>
+      <a href="${{h.blobUrl}}" download="synth_${{i}}.wav" title="ダウンロード" style="font-size:18px;">⬇</a>
+    </div>
+  `).join('') + '</div>';
+}}
+
+function clearHistory() {{
+  history.forEach(h => URL.revokeObjectURL(h.blobUrl));
+  history.length = 0;
+  renderHistory();
+}}
+
+function getSpeakerName(speakerId) {{
+  const sel = document.getElementById('synthSpeaker');
+  const opt = sel.querySelector('option[value="' + speakerId + '"]');
+  return opt ? opt.textContent : 'ID:' + speakerId;
+}}
+
+// --- Synthesis with progress ---
+let synthTimer = null;
 
 async function synthesize() {{
   const speaker = document.getElementById('synthSpeaker').value;
   const text = document.getElementById('synthText').value.trim();
   const btn = document.getElementById('synthBtn');
-  const status = document.getElementById('synthStatus');
+  const statusEl = document.getElementById('synthStatus');
+  const elapsedEl = document.getElementById('synthElapsed');
+  const errEl = document.getElementById('synthError');
   const audio = document.getElementById('synthAudio');
 
-  if (!speaker) {{ status.textContent = 'Speaker を選択してください'; return; }}
-  if (!text) {{ status.textContent = 'テキストを入力してください'; return; }}
+  errEl.textContent = '';
+  if (!speaker) {{ errEl.textContent = 'スピーカーを選択してください'; return; }}
+  if (!text) {{ errEl.textContent = 'テキストを入力してください'; return; }}
 
   btn.disabled = true;
-  status.textContent = 'Generating...';
+  statusEl.style.display = 'flex';
   audio.style.display = 'none';
+
+  const startTime = performance.now();
+  synthTimer = setInterval(() => {{
+    const sec = ((performance.now() - startTime) / 1000).toFixed(1);
+    elapsedEl.textContent = sec + '秒';
+  }}, 100);
 
   try {{
     const qRes = await fetch('/audio_query?text=' + encodeURIComponent(text) + '&speaker=' + speaker, {{ method: 'POST' }});
-    if (!qRes.ok) throw new Error('audio_query failed: ' + qRes.status);
+    if (!qRes.ok) throw new Error('audio_query に失敗しました (HTTP ' + qRes.status + ')');
     const query = await qRes.json();
     query.speedScale = parseFloat(document.getElementById('synthSpeed').value);
     query.volumeScale = parseFloat(document.getElementById('synthVolume').value);
@@ -733,7 +886,7 @@ async function synthesize() {{
       headers: {{ 'Content-Type': 'application/json' }},
       body: JSON.stringify(query),
     }});
-    if (!sRes.ok) throw new Error('synthesis failed: ' + sRes.status);
+    if (!sRes.ok) throw new Error('音声合成に失敗しました (HTTP ' + sRes.status + ')');
 
     const blob = await sRes.blob();
     const url = URL.createObjectURL(blob);
@@ -743,23 +896,145 @@ async function synthesize() {{
     const dl = document.getElementById('synthDownload');
     dl.href = url;
     dl.style.display = 'inline-flex';
-    status.textContent = '';
+
+    addHistory(text, getSpeakerName(speaker), url);
   }} catch (err) {{
-    status.textContent = 'Error: ' + err.message;
+    errEl.textContent = 'エラー: ' + err.message;
   }} finally {{
+    clearInterval(synthTimer);
+    statusEl.style.display = 'none';
     btn.disabled = false;
   }}
 }}
 
-function updateSpeakerSelect(voices) {{
-  const sel = document.getElementById('synthSpeaker');
-  if (voices.length === 0) {{
-    sel.innerHTML = '<option value="">-- ボイス未登録 --</option>';
-    return;
+// --- Batch Synthesis (1件ずつ順次合成) ---
+async function batchSynthesize() {{
+  const speaker = document.getElementById('batchSpeaker').value;
+  const rawText = document.getElementById('batchText').value.trim();
+  const btn = document.getElementById('batchBtn');
+  const progressEl = document.getElementById('batchProgress');
+  const statusText = document.getElementById('batchStatusText');
+  const barFill = document.getElementById('batchBarFill');
+  const resultsEl = document.getElementById('batchResults');
+
+  if (!speaker) {{ alert('スピーカーを選択してください'); return; }}
+  if (!rawText) {{ alert('テキストを入力してください'); return; }}
+
+  const lines = rawText.split('\\n').map(l => l.trim()).filter(l => l);
+  if (lines.length === 0) return;
+
+  btn.disabled = true;
+  progressEl.style.display = 'block';
+  resultsEl.innerHTML = '';
+  barFill.style.width = '0%';
+  statusText.textContent = '一括合成中... (0/' + lines.length + ')';
+
+  const speed = parseFloat(document.getElementById('batchSpeed').value);
+  const volume = parseFloat(document.getElementById('batchVolume').value);
+  const speakerName = getSpeakerName(speaker);
+
+  let completed = 0;
+  for (let i = 0; i < lines.length; i++) {{
+    const text = lines[i];
+    statusText.textContent = '合成中... (' + (i + 1) + '/' + lines.length + ')';
+    barFill.style.width = (i / lines.length * 100) + '%';
+    try {{
+      const qRes = await fetch('/audio_query?text=' + encodeURIComponent(text) + '&speaker=' + speaker, {{ method: 'POST' }});
+      if (!qRes.ok) throw new Error('audio_query failed');
+      const query = await qRes.json();
+      query.speedScale = speed;
+      query.volumeScale = volume;
+
+      const sRes = await fetch('/synthesis?speaker=' + speaker, {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify(query),
+      }});
+      if (!sRes.ok) throw new Error('synthesis failed');
+      const blob = await sRes.blob();
+      const url = URL.createObjectURL(blob);
+
+      const itemId = 'batch-item-' + i;
+      resultsEl.innerHTML += `
+        <div class="batch-item" id="${{itemId}}">
+          <span class="batch-text">${{text}}</span>
+          <audio controls src="${{url}}"></audio>
+          <button onclick="batchRegenerate('${{itemId}}', ${{speaker}}, ${{i}})" title="再生成" style="background:none;border:1px solid #ccc;border-radius:4px;cursor:pointer;font-size:16px;padding:2px 6px;">&#x21bb;</button>
+          <a href="${{url}}" download="batch_${{i + 1}}.wav" title="ダウンロード" style="font-size:16px;">⬇</a>
+        </div>`;
+
+      addHistory(text, speakerName, url);
+      completed++;
+    }} catch (err) {{
+      resultsEl.innerHTML += '<div style="color:#c62828;font-size:13px;">' + text + ': ' + err.message + '</div>';
+    }}
   }}
-  sel.innerHTML = voices.map(v =>
-    '<option value="' + v.speaker_id + '">' + v.name + ' (ID: ' + v.speaker_id + ')</option>'
-  ).join('');
+
+  barFill.style.width = '100%';
+  statusText.textContent = '完了 (' + completed + '/' + lines.length + '件)';
+  setTimeout(() => {{ progressEl.style.display = 'none'; }}, 3000);
+  btn.disabled = false;
+}}
+
+// --- Batch Regenerate (1件再生成) ---
+async function batchRegenerate(itemId, speaker, index) {{
+  const el = document.getElementById(itemId);
+  if (!el) return;
+  const textEl = el.querySelector('.batch-text');
+  const text = textEl ? textEl.textContent : '';
+  if (!text) return;
+
+  const regenBtn = el.querySelector('button');
+  if (regenBtn) regenBtn.disabled = true;
+
+  const speed = parseFloat(document.getElementById('batchSpeed').value);
+  const volume = parseFloat(document.getElementById('batchVolume').value);
+  const speakerName = getSpeakerName(speaker);
+
+  try {{
+    const qRes = await fetch('/audio_query?text=' + encodeURIComponent(text) + '&speaker=' + speaker, {{ method: 'POST' }});
+    if (!qRes.ok) throw new Error('audio_query failed');
+    const query = await qRes.json();
+    query.speedScale = speed;
+    query.volumeScale = volume;
+
+    const sRes = await fetch('/synthesis?speaker=' + speaker, {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify(query),
+    }});
+    if (!sRes.ok) throw new Error('synthesis failed');
+    const blob = await sRes.blob();
+    const url = URL.createObjectURL(blob);
+
+    // audio要素を更新
+    const audio = el.querySelector('audio');
+    if (audio) audio.src = url;
+    // ダウンロードリンクを更新
+    const dl = el.querySelector('a');
+    if (dl) dl.href = url;
+
+    addHistory(text, speakerName, url);
+  }} catch (err) {{
+    alert('再生成エラー: ' + err.message);
+  }} finally {{
+    if (regenBtn) regenBtn.disabled = false;
+  }}
+}}
+
+// --- Speaker Select ---
+function updateSpeakerSelect(voices) {{
+  const selIds = ['synthSpeaker', 'batchSpeaker'];
+  selIds.forEach(id => {{
+    const sel = document.getElementById(id);
+    if (voices.length === 0) {{
+      sel.innerHTML = '<option value="">-- ボイス未登録 --</option>';
+      return;
+    }}
+    sel.innerHTML = voices.map(v =>
+      '<option value="' + v.speaker_id + '">' + v.name + ' (ID: ' + v.speaker_id + ')</option>'
+    ).join('');
+  }});
 }}
 
 loadVoices();
@@ -852,7 +1127,7 @@ async def manage_save_voice(
     engine._voice_prompts.clear()
     engine._load_voices()
 
-    return {"message": f"Voice '{name}' saved. Restart server to apply model changes."}
+    return {"message": f"ボイス '{name}' を登録しました。"}
 
 
 @app.get("/manage/voice/{dir_name}/audio")
@@ -879,7 +1154,7 @@ async def manage_delete_voice(dir_name: str):
         engine.voices.clear()
         engine._voice_prompts.clear()
         engine._load_voices()
-    return {"message": "Deleted"}
+    return {"message": "削除しました"}
 
 
 @app.post("/manage/reload")
@@ -888,7 +1163,50 @@ async def manage_reload_voices():
     engine.voices.clear()
     engine._voice_prompts.clear()
     engine._load_voices()
-    return {"message": f"Reloaded {len(engine.voices)} voices"}
+    return {"message": f"{len(engine.voices)} 件のボイスを再読み込みしました"}
+
+
+@app.post("/batch_synthesis")
+async def batch_synthesis(
+    speaker: int = Query(..., description="スタイルID"),
+    request: Request = ...,
+):
+    """複数テキストをバッチ合成してZIPで返す（モデル内部で一括処理）
+
+    Body: {"texts": ["テキスト1", "テキスト2", ...],
+           "speedScale": 1.0, "volumeScale": 1.0}
+    """
+    body = await request.json()
+    texts = body.get("texts", [])
+    if not texts:
+        raise HTTPException(status_code=400, detail="テキストが空です")
+
+    speed = float(body.get("speedScale", 1.0))
+    volume = float(body.get("volumeScale", 1.0))
+    output_sr = int(body.get("outputSamplingRate", 24000))
+
+    try:
+        results = engine.synthesize_batch(
+            texts=texts,
+            speaker_id=speaker,
+            speed=speed,
+            volume=volume,
+            output_sr=output_sr,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("バッチ合成エラー")
+        raise HTTPException(status_code=500, detail=f"合成エラー: {e}")
+
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_STORED) as zf:
+        for i, (wav, sr) in enumerate(results):
+            buf = io.BytesIO()
+            sf.write(buf, wav, sr, format="WAV", subtype="PCM_16")
+            zf.writestr(f"{i:03d}.wav", buf.getvalue())
+    zip_buf.seek(0)
+    return Response(content=zip_buf.read(), media_type="application/zip")
 
 
 if __name__ == "__main__":
