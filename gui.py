@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import traceback
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -1809,6 +1810,7 @@ class SelfVoxGUI:
             self.root.after(0, self._set_state, self.STATE_IDLE)
         except Exception as e:
             self._append_log(f"エラー: {e}")
+            self._append_log(traceback.format_exc())
             self._fail_progress(str(e))
             self.root.after(0, self._set_state, self.STATE_IDLE)
 
@@ -1817,9 +1819,15 @@ class SelfVoxGUI:
     # ===================================================================
 
     def _worker_run(self):
-        from launcher import start_server_process
+        from launcher import start_server_process, PYTHON_EXE
 
         try:
+            if not PYTHON_EXE.exists():
+                raise RuntimeError(
+                    "Python 環境が見つかりません。"
+                    "初回セットアップが完了していない可能性があります。"
+                    "アプリを再起動してください。")
+
             self._update_progress("start")
             self.root.after(0, self._set_state, self.STATE_LOADING)
             self._append_log("SelfVox サーバーを起動中...")
@@ -1855,6 +1863,7 @@ class SelfVoxGUI:
 
         except Exception as e:
             self._append_log(f"エラー: {e}")
+            self._append_log(traceback.format_exc())
             self._fail_progress(str(e))
             self.root.after(0, self._set_state, self.STATE_STOPPED)
 
@@ -2154,6 +2163,8 @@ class SelfVoxGUI:
                 if self.state == self.STATE_RUNNING:
                     self._notify_server_reload_voices()
             except Exception as e:
+                self._append_log(
+                    f"ボイス登録エラー: {e}\n{traceback.format_exc()}")
                 status_label.configure(
                     text=f"エラー: {e}", text_color="#c62828")
                 register_btn.configure(state="normal", text="登録")
@@ -2235,6 +2246,8 @@ class SelfVoxGUI:
             if self.state == self.STATE_RUNNING:
                 self._notify_server_reload_voices()
         except Exception as e:
+            self._append_log(
+                f"ボイス保存エラー: {e}\n{traceback.format_exc()}")
             self._on_voice_save_error(str(e))
 
     def _notify_server_reload_voices(self):
@@ -2488,6 +2501,8 @@ class SelfVoxGUI:
                 self.root.after(0, self._on_synthesis_complete,
                                 wav_bytes, text, speaker_name)
             except Exception as e:
+                tb = traceback.format_exc()
+                self._append_log(f"音声合成エラー: {e}\n{tb}")
                 self.root.after(0, self._on_synthesis_error, str(e))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -2583,6 +2598,9 @@ class SelfVoxGUI:
                     self.root.after(0, self._batch_add_result,
                                     text, wav_bytes, speaker_name, i)
                 except Exception as e:
+                    self._append_log(
+                        f"一括合成エラー (行{i+1}): {e}\n"
+                        f"{traceback.format_exc()}")
                     self.root.after(0, self._batch_add_error, text, str(e))
             self.root.after(0, self._batch_complete, len(lines))
 
@@ -2678,6 +2696,8 @@ class SelfVoxGUI:
                 wav_bytes = self.api.synthesize(speaker_id, query)
                 self.root.after(0, _on_done, wav_bytes)
             except Exception as e:
+                self._append_log(
+                    f"再生成エラー: {e}\n{traceback.format_exc()}")
                 self.root.after(0, _on_error, str(e))
 
         def _on_done(wav_bytes: bytes):
