@@ -71,11 +71,8 @@ def _check_ssl(log_callback=None) -> None:
     os.environ["REQUESTS_CA_BUNDLE"] = ""
     os.environ["CURL_CA_BUNDLE"] = ""
     os.environ["HF_HUB_DISABLE_SSL_VERIFY"] = "1"
-    # Python urllib
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    ssl._create_default_https_context = lambda: ctx
+    # Python urllib — グローバルに検証を無効化
+    ssl._create_default_https_context = ssl._create_unverified_context
 
 UV_DOWNLOAD_URL = (
     "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip"
@@ -133,7 +130,10 @@ def download_uv(log_callback=None) -> None:
 
     zip_path = TOOLS_DIR / "uv.zip"
     try:
-        urllib.request.urlretrieve(UV_DOWNLOAD_URL, zip_path)
+        ctx = ssl._create_default_https_context()
+        with urllib.request.urlopen(UV_DOWNLOAD_URL, context=ctx) as resp, \
+                open(zip_path, "wb") as f:
+            f.write(resp.read())
     except Exception as e:
         raise RuntimeError(
             f"uv のダウンロードに失敗しました: {e}\n"
@@ -174,6 +174,10 @@ def run_cmd_with_output(args: list[str], desc: str, log_callback=None) -> None:
             f"実行ファイルが見つかりません: {exe_path}\n"
             "セットアップが完了していない可能性があります。")
 
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+
     try:
         proc = subprocess.Popen(
             args,
@@ -181,7 +185,10 @@ def run_cmd_with_output(args: list[str], desc: str, log_callback=None) -> None:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
+            env=env,
             creationflags=creation_flags,
         )
     except OSError as e:
@@ -284,6 +291,8 @@ def start_server_process(port: int = 50021) -> subprocess.Popen:
 
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
 
     creation_flags = 0
     if hasattr(subprocess, "CREATE_NO_WINDOW"):
@@ -295,6 +304,8 @@ def start_server_process(port: int = 50021) -> subprocess.Popen:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
         env=env,
         creationflags=creation_flags,
