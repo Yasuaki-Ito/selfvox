@@ -27,6 +27,17 @@ HF_CACHE_DIR = APP_DIR / ".cache"
 # HuggingFaceモデルのダウンロード先をアプリフォルダ内に固定
 os.environ["HF_HOME"] = str(HF_CACHE_DIR)
 
+# uv のデータ保存先をアプリフォルダ内に固定。
+# 既定の AppData\Roaming\uv は OneDrive の同期対象になっている環境があり、
+# その場合 uv が管理 Python を参照できず os error 448
+# (信頼されていないマウントポイントが含まれているため、パスをスキャンできません)
+# で venv 作成に失敗する。
+UV_DATA_DIR = TOOLS_DIR / "uv"
+os.environ["UV_DATA_DIR"] = str(UV_DATA_DIR)
+os.environ["UV_PYTHON_INSTALL_DIR"] = str(UV_DATA_DIR / "python")
+os.environ["UV_CACHE_DIR"] = str(UV_DATA_DIR / "cache")
+os.environ["UV_TOOL_DIR"] = str(UV_DATA_DIR / "tools")
+
 # SSL 証明書検証に失敗する環境向けのフォールバック
 _ssl_checked = False
 _ssl_ok = True
@@ -88,6 +99,11 @@ PACKAGES_OTHER = [
     "fastapi",
     "uvicorn[standard]",
     "numpy",
+    # librosa (qwen-tts の依存) が numba を要求する。numba の新しい版は
+    # numpy に上限を持つため、numpy を無制限にすると依存解決が
+    # 上限を持たない numba 0.53.1 まで後退し、Python 3.12 非対応の
+    # llvmlite 0.36.0 のビルドに失敗する。下限を明示して後退を防ぐ。
+    "numba>=0.60",
     "pydantic",
 ]
 
